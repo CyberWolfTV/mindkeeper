@@ -1,0 +1,312 @@
+#!/usr/bin/python3
+
+import sys
+import hashlib
+import os
+import json
+import pwinput
+
+from base64 import b64encode
+from base64 import b64decode
+from Crypto.Util.Padding import pad
+from Crypto.Util.Padding import unpad
+from Crypto.Cipher import AES
+
+
+def help():
+    print('\nmindkeeper [Option] \n\nOptions:')
+    print('-h / --help          -> shows this')
+    print('DIRECTORY/FILENAME   -> asks for the passwords in the file')
+    print('File -a / --add      -> asks u for a new passwd which will be added')
+    print('File -n / --new      -> lets create u a new file with passwds')
+    print('File -d / --delete   -> asks u which entry u want to delete')
+    print('File -s / --settings -> lets u change all settings')
+    print('\nHow it works:')
+    print('It will encrypt ur password with AES256, CBC mode.')
+    print('Then it will hash ur encrypted passwd with sha512.')
+    print('It saves ur encrypted-passwd hashes in the specified file.')
+    print('Afterwards it will ask u for all the passwd when u want it.')
+    print('To encrypt ur passwd it will use the master key.')
+    print('\nU CAN NOT RESTORE UR PASSWORDS FROM THESE FILES, IT')
+    print('DOES NOT SAVE EM, THEREFORE USE A PASSWORDMANAGER!')
+    exit()
+
+
+def custom_exit(i):
+    if(i == 'exit'):
+        print("exit means exit...")
+        exit()
+
+
+def ask(question, default):
+    input1 = input(question)
+    if(input1 == '' or input1 == None):
+        input1 = default
+    if(input1 == 'n' or input1 == 'N'):
+        return False
+    elif(input1 == 'y' or input1 == 'Y'):
+        return True
+    else:
+        return ask(question, default)
+
+
+def get_filename(filename):
+    while(True):
+        if(os.path.isfile(filename)):
+            break
+        filename = input('File: ')
+        custom_exit(filename)
+    return filename
+
+
+def read_file_load_json(filename):
+    file = open(filename, 'r')
+    json_content = file.read()
+    content = json.loads(json_content)
+    file.close()
+    return content
+
+
+def encrypt(msg, masterkey):
+    msg = bytes(msg.encode())
+    cipher = AES.new(masterkey, AES.MODE_CBC)
+    ct_bytes = cipher.encrypt(pad(msg, AES.block_size))
+    iv = b64encode(cipher.iv).decode('utf-8')
+    cipher_text = b64encode(ct_bytes).decode('utf-8')
+    return [iv, cipher_text]
+
+
+def decrypt(iv, ciphertext, masterkey):
+    iv = b64decode(iv)
+    ct = b64decode(ciphertext)
+    cipher = AES.new(masterkey, AES.MODE_CBC, iv)
+    msg = unpad(cipher.decrypt(ct), AES.block_size)
+    return msg.decode()
+
+
+def encrypt_and_hash(masterkey, plaintext, iv=None):
+    plaintext = bytes(plaintext.encode())
+    if(iv != None):
+        iv = b64decode(iv)
+        cipher = AES.new(masterkey, AES.MODE_CBC, iv)
+    else:
+        cipher = AES.new(masterkey, AES.MODE_CBC)
+        iv = cipher.iv
+
+    ct_bytes = cipher.encrypt(pad(plaintext, AES.block_size))
+    cipher_text = b64encode(ct_bytes).decode('utf-8')
+    passwd_hash = b64encode(hashlib.sha512(cipher_text.encode('utf-8')).digest()).decode('utf-8')
+    return [b64encode(iv).decode('utf-8'), passwd_hash]
+
+
+def get_masterkey(filecontent):
+    if(filecontent["mask"]):
+        masterpasswd = pwinput.pwinput("Enter Masterpasswd: ", mask="*")
+    else:
+        masterpasswd = input("Enter Masterpasswd: ")
+    masterkey = hashlib.sha256(masterpasswd.encode()).digest()
+    mp_hash = encrypt_and_hash(masterkey, masterpasswd, filecontent["masterpasswd"][1])
+    if(mp_hash[1] == filecontent["masterpasswd"][0]):
+        return masterkey
+    print("Masterpassd is incorrect.")
+    return get_masterkey(filecontent)
+
+
+def set_masterpasswd(mask):
+    if(mask):
+        masterpasswd = pwinput.pwinput("Enter Masterpasswd: ", mask="*")
+        masterpasswd_sec = pwinput.pwinput("Re-enter Masterpasswd: ", mask="*")
+    else:
+        masterpasswd = input("Enter Masterpasswd: ")
+        masterpasswd_sec = input("Re-enter Masterpasswd: ")
+
+    if(masterpasswd != masterpasswd_sec):
+        print("Ur passwords didnt matched!\n")
+        return set_masterpasswd(mask)
+    custom_exit(masterpasswd)
+
+    masterkey = hashlib.sha256(masterpasswd.encode()).digest()
+    mp_hash = encrypt_and_hash(masterkey, masterpasswd)
+    return [mp_hash[1], mp_hash[0], masterkey]
+
+
+def init(filename):
+    try:
+        file = open(filename, 'x')
+        file.close()
+    except Exception:
+        print("File already exists.")
+        exit()
+    data = {}
+    data["entries"] = []
+    mask = ask("When entering passwords, should they appear as ***? [Y/n]: ", "y")
+    if(mask):
+        data["mask"] = True
+    else:
+        data["mask"] = False
+
+    masterpasswd = set_masterpasswd(mask)
+    masterkey = masterpasswd[2]
+    data["masterpasswd"] = [masterpasswd[0], masterpasswd[1]]
+
+    return [masterkey, data]
+
+
+def change_settings(filename, filecontent):
+    mask = ask("When entering passwords, should they appear as ***? [Y/n]: ", "y")
+    if(mask):
+        filecontent["mask"] = True
+    else:
+        filecontent["mask"] = False
+    return filecontent
+
+
+def add_entries(file_content, masterkey):
+    new_entries = []
+    add_more = True
+    question = "Wanna add one more entry? [y/N]: "
+    mask = file_content["mask"]
+    entries = file_content["entries"]
+
+    while(add_more):
+        name = input("Enter a name for the entry: ")
+        custom_exit(name)
+
+        found = False
+        for i in range(0, len(file_content["entries"])):
+            if(name == decrypt(file_content["entries"][i][2][0], file_content["entries"][i][2][1], masterkey)):
+                found = True
+        if(found):
+            print("Choose a different name.")
+            continue
+
+        if(mask):
+            passwd = pwinput.pwinput("Enter Passwd: ", mask="*")
+            passwd_sec = pwinput.pwinput("Re-enter Passwd: ", mask="*")
+        else:
+            passwd = input("Enter Passwd: ")
+            passwd_sec = input("Re-enter Passwd: ")
+
+        if(passwd != passwd_sec):
+            print("Ur passwords didnt matched!\n")
+            continue
+        custom_exit(passwd)
+
+        entry = encrypt_and_hash(masterkey, passwd)
+        enc_name = encrypt(name, masterkey)
+        entries.append([entry[1], entry[0], enc_name])
+
+        add_more = ask(question, 'n')
+
+    file_content["entries"] = entries
+    return file_content
+
+
+def delete_entries(filecontent, masterkey):
+    for i in filecontent["entries"]:
+        print(decrypt(i[2][0], i[2][1], masterkey))
+    
+    while(True):
+        x = input("Which entry do u want to delete?: ")
+        found = False
+        custom_exit(x)
+
+        for i in range(0, len(filecontent["entries"])):
+            if(x == decrypt(filecontent["entries"][i][2][0], filecontent["entries"][i][2][1], masterkey)):
+                found = True
+                filecontent["entries"].pop(i)
+        if(not found):
+            print("Entry does not exist.")
+            continue
+        if(not ask("Delete one more entry? [y/N]: ", 'n')):
+            break
+    return filecontent
+
+
+def keep_in_mind(masterkey, file_content):
+    mask = file_content["mask"]
+    entries = file_content["entries"]
+
+    for i in entries:
+        name = decrypt(i[2][0], i[2][1], masterkey)
+        print("\nEntry: " + name)
+        passwd = ""
+        if(mask):
+            passwd = pwinput.pwinput("Enter Passwd: ", mask="*")
+        else:
+            passwd = input("Enter Passwd: ")
+        
+        custom_exit(passwd)
+
+        passwd_hash = encrypt_and_hash(masterkey, passwd, i[1])
+        if(passwd_hash[1] == i[0]):
+            print("Passwd was correct!")
+        else:
+            print("PASSWD WAS INCORRECT!\nBURN IN HELL!....")
+
+
+
+def main():
+    new = False
+    add = False
+    settings = False
+    delete_entry = False
+    wanna_test_passwds = True
+    masterkey = None
+    filename = ""
+
+    for i in range(0, len(sys.argv) - 1):
+        i += 1
+        if(sys.argv[i] =='-h' or sys.argv[i] == '--help'):
+            help()
+        elif(sys.argv[i] == '-a' or sys.argv[i] == '--add'):
+            add = True
+        elif(sys.argv[i] == '-n' or sys.argv[i] == '--new'):
+            new = True
+        elif(sys.argv[i] == '-d' or sys.argv[i] == '--delete'):
+            delete_entry = True
+        elif(sys.argv[i] == '-s' or sys.argv[i] == '--settings'):
+            settings = True
+        else:
+            filename = sys.argv[i]
+
+    if(new):
+        if(filename == ""):
+            filename = input("Please enter a filename: ")
+        custom_exit(filename)
+        key_and_content = init(filename)
+        masterkey = key_and_content[0]
+        file_content = key_and_content[1]
+
+    filename = get_filename(filename)
+    custom_exit(filename)
+
+    if(not new):
+        file_content = read_file_load_json(filename)
+
+    if(masterkey == None):
+        masterkey = get_masterkey(file_content)
+
+    if(settings):
+        file_content = change_settings(filename, file_content)
+
+    if(add):
+        file_content = add_entries(file_content, masterkey)
+    
+    if(delete_entry):
+        file_content = delete_entries(file_content, masterkey)
+
+    if(add or settings or new or delete_entry):
+        wanna_test_passwds = ask("Wanna test the passwds? [Y/n]: ", 'y')
+
+    if(wanna_test_passwds):
+        keep_in_mind(masterkey, file_content)
+
+    if(new or settings or add or delete_entry):
+        json_content = json.dumps(file_content)
+        file = open(filename, 'w')
+        file.write(json_content)
+
+
+if __name__ == '__main__':
+    main()
