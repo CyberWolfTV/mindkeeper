@@ -11,7 +11,7 @@ pip3 install pycryptodome
 git clone https://github.com/CyberWolfTV/mindkeeper.git
 cd mindkeeper
 chmod +x mindkeeper
-mv mindkeeper /bin/mindkeeper
+sudo mv mindkeeper /bin/mindkeeper
 cd ..
 rm -rf mindkeeper
 mindkeeper --help
